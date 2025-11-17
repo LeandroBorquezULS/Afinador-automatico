@@ -1,4 +1,3 @@
-# tuner_with_guitar_mode.py
 import numpy as np
 import sounddevice as sd
 import tkinter as tk
@@ -7,44 +6,62 @@ from collections import deque
 from math import log2
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import serial
+import serial.tools.list_ports
+import time
+import threading
 
-# ---------- PARAMETROS ----------
+# ---------- PARAMETROS ---------- (ajusta según necesidad)
 FS = 44100
-CHUNK = 4096            # mayor CHUNK => mejor resolución baja frecuencia
-UPDATE_MS = 120         # intervalo UI en ms
-SMOOTH_N = 5            # número de lecturas a promediar
+CHUNK = 4096
+UPDATE_MS = 120
+SMOOTH_N = 5
 A4_FREQ = 440.0
 
-# Umbrales en cents
-ORANGE_CENTS = 20       # dentro de +/- => naranja (aproximando)
-GREEN_CENTS = 5         # dentro de +/- => condición de afinado
-STABLE_MS_REQUIRED = 1000  # ms sostenidos para ponerse verde
+ORANGE_CENTS = 20
+GREEN_CENTS = 5
+STABLE_MS_REQUIRED = 500         # ahora 500 ms (0.5 s) de estabilidad requerida
+STABLE_CENTS_THRESHOLD = 3.0     # tolerancia en cents para considerar "misma frecuencia" (ajustable)
 
-# Notas en solfeo (Do = C)
 SOLFEGE = ['Do', 'Do#', 'Re', 'Re#', 'Mi', 'Fa', 'Fa#', 'Sol', 'Sol#', 'La', 'La#', 'Si']
 
-# Afinación estándar de guitarra (cuerdas abiertas, de grave a agudo)
 GUITAR_STRINGS = {
-    "6 - Mi (E2)": 82.4068892282175,
-    "5 - La (A2)": 110.000000000000,
-    "4 - Re (D3)": 146.8323839587038,
-    "3 - Sol (G3)": 195.9977179908746,
-    "2 - Si (B3)": 246.9416506280621,
-    "1 - Mi (E4)": 329.6275569128699
+    "6 - Mi (E2)": 82.4069,
+    "5 - La (A2)": 110.0,
+    "4 - Re (D3)": 146.832,
+    "3 - Sol (G3)": 195.998,
+    "2 - Si (B3)": 246.942,
+    "1 - Mi (E4)": 329.628
 }
 
-# ---------- UTILIDADES ----------
+# ---------- SERIAL helpers ----------
+def find_esp32_port():
+    ports = list(serial.tools.list_ports.comports())
+    for p in ports:
+        desc = (p.description or "").upper()
+        if "USB" in desc or "ESP32" in desc or "CP210" in desc or "CH340" in desc:
+            return p.device
+    return None
+
+def open_serial(port, baud=115200, timeout=1):
+    try:
+        ser = serial.Serial(port, baud, timeout=timeout)
+        time.sleep(2)
+        ser.flushInput()
+        return ser
+    except Exception as e:
+        print("Error abriendo puerto serial:", e)
+        return None
+
+# ---------- FRECUENCIA / NOTA ----------
 def freq_to_note_name(freq):
-    """Convierte frecuencia a nombre de nota y octava (solfeo)."""
     if freq <= 0 or not np.isfinite(freq):
         return None, None, None
-    # número de semitonos relativo a A4
     n = 12 * log2(freq / A4_FREQ)
     semitone = int(round(n))
-    note_index = (semitone + 9) % 12  # A -> índice 9
+    note_index = (semitone + 9) % 12
     octave = 4 + ((semitone + 9) // 12)
     note_name = SOLFEGE[note_index]
-    # frecuencia exacta de la nota redondeada
     note_freq = A4_FREQ * (2 ** (semitone / 12))
     return note_name, octave, note_freq
 
@@ -54,18 +71,14 @@ def cents_difference(freq, target_freq):
     return 1200 * log2(freq / target_freq)
 
 def get_freq_autocorr(data):
-    """Estimación de la frecuencia fundamental por autocorrelación robusta."""
-    # eliminar DC y vigilar valores nulos
-    data = np.asarray(data, dtype=float)
+    data = np.nan_to_num(np.asarray(data, dtype=float))
     if np.allclose(data, 0):
         return 0.0
     data -= np.mean(data)
-    # ventana para reducir bordes
     window = np.hanning(len(data))
     data_w = data * window
     corr = np.correlate(data_w, data_w, mode='full')
-    corr = corr[len(corr)//2:]  # mitad positiva
-    # buscar primer cruce positivo para ignorar pico en cero
+    corr = corr[len(corr)//2:]
     d = np.diff(corr)
     try:
         start = np.where(d > 0)[0][0]
@@ -76,36 +89,101 @@ def get_freq_autocorr(data):
         return 0.0
     return FS / peak
 
+# ---------- MOTOR CONTROLLER (protocolo simple) ----------
+class MotorController:
+    """
+    Protocolo: send "<dir><steps>\n" where dir is '+' (tensionar) or '-' (aflojar).
+    ESP32 replies "DONE\n" when finished. Send "S\n" to stop/abort.
+    """
+    def __init__(self, ser):
+        self.ser = ser
+        self.lock = threading.Lock()
+        self.last_response = None
+        self._running = False
+        if ser:
+            self._running = True
+            t = threading.Thread(target=self._reader_thread, daemon=True)
+            t.start()
+
+    def _reader_thread(self):
+        while self._running and self.ser and self.ser.is_open:
+            try:
+                line = self.ser.readline().decode('utf-8', errors='ignore').strip()
+                if line:
+                    with self.lock:
+                        self.last_response = line
+            except Exception:
+                pass
+            time.sleep(0.01)
+
+    def send_move(self, direction, steps, timeout=10.0):
+        if not self.ser or not self.ser.is_open:
+            return False
+        cmd = f"{direction}{int(steps)}\n"
+        with self.lock:
+            self.last_response = None
+        try:
+            self.ser.write(cmd.encode('utf-8'))
+        except Exception:
+            return False
+        t0 = time.time()
+        while time.time() - t0 < timeout:
+            with self.lock:
+                if self.last_response is not None:
+                    if "DONE" in self.last_response:
+                        return True
+            time.sleep(0.02)
+        return False
+
+    def stop(self):
+        if self.ser and self.ser.is_open:
+            try:
+                self.ser.write(b"S\n")
+            except Exception:
+                pass
+
+    def close(self):
+        self._running = False
+        if self.ser:
+            try:
+                self.ser.close()
+            except Exception:
+                pass
+
 # ---------- INTERFAZ ----------
 class TunerApp:
     def __init__(self, root):
         self.root = root
-        root.title("Afinador - FFT + Afinador de Guitarra")
+        root.title("Afinador con control de ESP32")
         self.running = False
         self.device_index = None
-
-        # smoothing
         self.history = deque(maxlen=SMOOTH_N)
-
-        # guitarra mode
         self.mode_var = tk.StringVar(value="Normal")
         self.string_var = tk.StringVar()
         self.completed_strings = set()
-        self.stable_count = 0
-        self.completed_label_var = tk.StringVar(value="No completadas")
+        self.cents_per_step_var = tk.DoubleVar(value=1.0)  # ajustar mediante calibración
+        self.max_steps_var = tk.IntVar(value=50)          # "n" inicial por acción
+        self.step_timeout_var = tk.DoubleVar(value=8.0)
+        self.motor_enabled_var = tk.BooleanVar(value=True)
 
-        # FFT data
         self.freq_axis = np.fft.rfftfreq(CHUNK, 1/FS)
         self.fft_data = np.zeros(len(self.freq_axis))
 
+        self.motor = None
+        self.ser = None
+
+        # estabilidad
+        self._stable_candidate_freq = None
+        self._stable_since = None
+
         self.build_ui()
         self.populate_devices()
+        self.try_open_serial()
 
     def build_ui(self):
         frm = ttk.Frame(self.root)
         frm.pack(padx=8, pady=8, fill='x')
 
-        # fila: dispositivo + modo
         top = ttk.Frame(frm)
         top.pack(fill='x', pady=4)
         ttk.Label(top, text="Dispositivo entrada:").grid(row=0, column=0, sticky='w')
@@ -116,17 +194,25 @@ class TunerApp:
         mode_combo.grid(row=0, column=3, padx=6)
         mode_combo.bind("<<ComboboxSelected>>", self.on_mode_change)
 
-        # fila: selector cuerda (solo guitarra)
         string_row = ttk.Frame(frm)
         string_row.pack(fill='x', pady=2)
-        ttk.Label(string_row, text="Cuerda (guitarra):").grid(row=0, column=0, sticky='w')
+        ttk.Label(string_row, text="Cuerda:").grid(row=0, column=0, sticky='w')
         self.string_combo = ttk.Combobox(string_row, state='readonly', textvariable=self.string_var, width=30)
         self.string_combo['values'] = list(GUITAR_STRINGS.keys())
         self.string_combo.grid(row=0, column=1, padx=6)
         self.string_combo.current(0)
         self.string_combo.config(state='disabled')
 
-        # fila: botones
+        conf_row = ttk.Frame(frm)
+        conf_row.pack(fill='x', pady=2)
+        ttk.Label(conf_row, text="Cents/step (calibrar):").grid(row=0, column=0, sticky='w')
+        ttk.Entry(conf_row, textvariable=self.cents_per_step_var, width=8).grid(row=0, column=1, padx=4)
+        ttk.Label(conf_row, text="Max steps/action (n):").grid(row=0, column=2, sticky='w', padx=(8,0))
+        ttk.Entry(conf_row, textvariable=self.max_steps_var, width=6).grid(row=0, column=3, padx=4)
+        ttk.Label(conf_row, text="Step timeout (s):").grid(row=0, column=4, sticky='w', padx=(8,0))
+        ttk.Entry(conf_row, textvariable=self.step_timeout_var, width=6).grid(row=0, column=5, padx=4)
+        ttk.Checkbutton(conf_row, text="Motor enabled", variable=self.motor_enabled_var).grid(row=0, column=6, padx=(8,0))
+
         btns = ttk.Frame(frm)
         btns.pack(fill='x', pady=6)
         self.start_btn = ttk.Button(btns, text="Iniciar", command=self.start)
@@ -134,26 +220,24 @@ class TunerApp:
         ttk.Button(btns, text="Detener", command=self.stop).grid(row=0, column=1, padx=4)
         ttk.Button(btns, text="Reiniciar completadas", command=self.reset_completed).grid(row=0, column=2, padx=6)
 
-        # fila: label nota grande
         self.note_label = tk.Label(self.root, text="—", font=("Arial", 44), width=16)
         self.note_label.pack(pady=8)
 
-        # fila: detalles
         details = ttk.Frame(self.root)
         details.pack(fill='x')
         self.freq_var = tk.StringVar(value="Freq: - Hz")
         self.cents_var = tk.StringVar(value="Cents: -")
+        self.completed_label_var = tk.StringVar(value="No completadas")
         ttk.Label(details, textvariable=self.freq_var).grid(row=0, column=0, padx=6)
         ttk.Label(details, textvariable=self.cents_var).grid(row=0, column=1, padx=6)
         ttk.Label(details, text="Completadas:").grid(row=0, column=2, padx=(20,2))
         ttk.Label(details, textvariable=self.completed_label_var).grid(row=0, column=3, padx=2)
 
-        # area grafica (matplotlib embebido)
         fig = Figure(figsize=(7,3))
         self.ax = fig.add_subplot(111)
         self.ax.set_xlabel("Frecuencia [Hz]")
         self.ax.set_ylabel("Magnitud")
-        self.ax.set_title("FFT (rango 60-2000 Hz)")
+        self.ax.set_title("FFT (60-2000 Hz)")
         self.line, = self.ax.plot(self.freq_axis, self.fft_data)
         self.ax.set_xlim(60, 2000)
         self.ax.set_ylim(0, 1e-6)
@@ -163,16 +247,30 @@ class TunerApp:
 
     def populate_devices(self):
         devs = sd.query_devices()
-        in_devs = [(i, d['name']) for i, d in enumerate(devs) if d['max_input_channels'] > 0]
-        if not in_devs:
-            messagebox.showerror("Error", "No se encontró dispositivo de entrada con canales.")
-            return
+        in_devs = []
+        for i, d in enumerate(devs):
+            if isinstance(d, dict) and d.get('max_input_channels', 0) > 0:
+                in_devs.append((i, d.get('name', f"Device {i}")))
         values = [f"{i}: {name}" for i, name in in_devs]
         self.device_map = {f"{i}: {name}": i for i, name in in_devs}
         self.device_combo['values'] = values
-        self.device_combo.current(0)
-        # actualizar device_index
-        self.device_index = self.device_map[self.device_combo.get()]
+        if values:
+            self.device_combo.current(0)
+            self.device_index = self.device_map[self.device_combo.get()]
+
+    def try_open_serial(self):
+        port = find_esp32_port()
+        if port is None:
+            print("No se encontró ESP32")
+            self.ser = None
+            self.motor = None
+        else:
+            self.ser = open_serial(port, 115200, timeout=0.1)
+            if self.ser:
+                self.motor = MotorController(self.ser)
+                print("Conectado a", port)
+            else:
+                self.motor = None
 
     def on_mode_change(self, _ev=None):
         if self.mode_var.get() == "Afinador guitarra":
@@ -189,11 +287,15 @@ class TunerApp:
         except Exception:
             messagebox.showerror("Error", "Selecciona un dispositivo válido")
             return
+        if self.motor_enabled_var.get() and not self.motor:
+            self.try_open_serial()
         self.running = True
         self.root.after(10, self.update_loop)
 
     def stop(self):
         self.running = False
+        if self.motor:
+            self.motor.stop()
 
     def reset_completed(self):
         self.completed_strings.clear()
@@ -203,105 +305,223 @@ class TunerApp:
         remaining = [k for k in GUITAR_STRINGS.keys() if k not in self.completed_strings]
         self.completed_label_var.set(", ".join(remaining) if remaining else "Todas completadas")
 
+    def _move_and_wait(self, direction_sign, steps):
+        if not self.motor:
+            return False
+        timeout = float(self.step_timeout_var.get())
+        ok = self.motor.send_move(direction_sign, steps, timeout=timeout)
+        return ok
+
+    def iterative_tune(self, initial_cents, initial_sign):
+        """
+        Algoritmo iterativo con reducción de pasos por overshoot:
+         - initial_n = max_steps (parámetro)
+         - steps a mover inicialmente = min(initial_n, rounding(initial_cents / cents_per_step)) o initial_n si esto da 0
+         - si overshoot -> reverse y reducir pasos según n / (m^2) (m = número de overshoots/iteraciones)
+         - detener cuando abs(cents) <= GREEN_CENTS
+        """
+        if not self.motor or not self.motor_enabled_var.get():
+            return
+
+        cents_per_step = float(self.cents_per_step_var.get()) or 1.0
+        initial_n = int(self.max_steps_var.get()) or 1
+        max_iterations = 10
+
+        prev_cents = initial_cents
+        # tracking overshoots/reducciones
+        iteration = 0
+
+        for it in range(max_iterations):
+            iteration += 1
+            # calcular pasos sugeridos en base a prev_cents, pero no más que initial_n
+            suggested = int(round(abs(prev_cents) / cents_per_step)) if cents_per_step > 0 else initial_n
+            if suggested <= 0:
+                steps = initial_n
+            else:
+                steps = min(initial_n, suggested)
+
+            # si estamos en iteraciones posteriores y hubo overshoot, reducir según n/(iteration^2)
+            if iteration > 1:
+                reduced = max(1, int(round(initial_n / (iteration ** 2))))
+                steps = min(steps, reduced)
+
+            if steps <= 0:
+                break
+
+            direction = '+' if prev_cents < 0 else '-'
+
+            ok = self._move_and_wait(direction, steps)
+            if not ok:
+                break
+
+            # pequeño retardo para nueva lectura
+            time.sleep(0.12)
+
+            # esperar a que update_loop publique latest_cents
+            t0 = time.time()
+            new_cents = getattr(self, "latest_cents", None)
+            while new_cents is None and time.time() - t0 < 1.0:
+                time.sleep(0.05)
+                new_cents = getattr(self, "latest_cents", None)
+            if new_cents is None:
+                break
+
+            # si sign flipped -> overshoot: revert parcialmente y contar iteración (ya se incrementó)
+            if (prev_cents < 0 and new_cents > 0) or (prev_cents > 0 and new_cents < 0):
+                # revert using reduced steps (n/(iteration^2)), al menos 1 paso
+                reverse_steps = max(1, int(round(initial_n / (iteration ** 2))))
+                rev_dir = '-' if direction == '+' else '+'
+                self._move_and_wait(rev_dir, reverse_steps)
+                time.sleep(0.08)
+
+            # si ya afinada -> salir
+            if abs(new_cents) <= GREEN_CENTS:
+                break
+
+            # actualizar prev_cents para siguiente iteración
+            prev_cents = new_cents
+
+    def _is_freq_stable(self, freq):
+        """
+        Determina si la frecuencia 'freq' se mantiene estable respecto al candidato actual.
+        Uso de umbral en cents para evitar considerar micro-fluctuaciones.
+        Retorna True si estable durante STABLE_MS_REQUIRED.
+        """
+        now = time.time() * 1000.0  # ms
+        if self._stable_candidate_freq is None:
+            # iniciar nuevo candidato
+            self._stable_candidate_freq = freq
+            self._stable_since = now
+            return False
+        # comparar en cents entre candidato y nueva medida
+        cand = self._stable_candidate_freq
+        c = cents_difference(freq, cand)
+        if c is None or not np.isfinite(c):
+            # reset candidato
+            self._stable_candidate_freq = freq
+            self._stable_since = now
+            return False
+        if abs(c) <= STABLE_CENTS_THRESHOLD:
+            # sigue estable
+            elapsed = now - (self._stable_since or now)
+            return elapsed >= STABLE_MS_REQUIRED
+        else:
+            # cambió significativamente -> reiniciar candidato
+            self._stable_candidate_freq = freq
+            self._stable_since = now
+            return False
+
     def update_loop(self):
         if not self.running:
             return
         try:
             audio = sd.rec(CHUNK, samplerate=FS, channels=1, dtype='float32', device=self.device_index)
             sd.wait()
-            data = audio.flatten()
+            data = np.nan_to_num(audio.flatten())
         except Exception as e:
             self.note_label.config(text="Error", fg="red")
             self.freq_var.set(f"Error: {e}")
             self.root.after(UPDATE_MS, self.update_loop)
             return
 
-        # FFT para gráfica
         window = np.hanning(len(data))
         fft = np.fft.rfft(data * window)
         mag = np.abs(fft) / len(data)
         self.fft_data = mag
-        # actualizar gráfica (limitar y escalar)
         self.line.set_ydata(self.fft_data)
         self.ax.set_ylim(0, max(1e-6, self.fft_data.max()*1.2))
         self.canvas.draw_idle()
 
-        # estimación de frecuencia con autocorrelación + suavizado
         freq = get_freq_autocorr(data)
-        if freq <= 0:
-            # si no detecta, mostrar guion
+        if freq <= 0 or not np.isfinite(freq):
             self.note_label.config(text="—", fg="black")
             self.freq_var.set("Freq: - Hz")
             self.cents_var.set("Cents: -")
             self.root.after(UPDATE_MS, self.update_loop)
             return
 
-        # suavizado por media móvil
         self.history.append(freq)
         freq_s = float(np.mean(self.history))
+        self.latest_freq = freq_s
 
-        # modo guitarra: objetivo específico
         if self.mode_var.get() == "Afinador guitarra":
             sel_string = self.string_var.get()
-            if sel_string in self.completed_strings:
-                # marcar completada y saltar
-                self.note_label.config(text=f"{sel_string}\nCompletada", fg="gray")
-                self.update_completed_label()
-                self.freq_var.set(f"Freq: {freq_s:.1f} Hz")
-                self.cents_var.set("Cents: 0")
-                self.root.after(UPDATE_MS, self.update_loop)
-                return
-
             target_freq = GUITAR_STRINGS.get(sel_string)
             cents = cents_difference(freq_s, target_freq)
+            if cents is None or not np.isfinite(cents):
+                cents = 0.0
             self.freq_var.set(f"Freq: {freq_s:.1f} Hz (obj: {target_freq:.1f} Hz)")
             self.cents_var.set(f"Cents: {cents:+.1f}")
 
-            # determino acción tensar/aflojar
-            if cents is None:
-                action = ""
-            elif cents < -ORANGE_CENTS:
-                action = "Grave → tensar cuerda"
-            elif cents > ORANGE_CENTS:
-                action = "Agudo → aflojar cuerda"
-            else:
-                action = "Ajustando..."
+            action = ""
+            self.latest_cents = cents
 
-            # color lógico y condición de completado
-            if abs(cents) <= GREEN_CENTS:
-                self.stable_count += 1
-            else:
-                self.stable_count = 0
-
-            # naranja si dentro de ORANGE_CENTS pero fuera de GREEN_CENTS
-            if abs(cents) <= ORANGE_CENTS and abs(cents) > GREEN_CENTS:
-                color = "orange"
-            elif abs(cents) <= GREEN_CENTS and (self.stable_count * UPDATE_MS) >= STABLE_MS_REQUIRED:
+            # Si la cuerda ya fue marcada como completada, NO mandar más comandos (hasta reiniciar o cambiar selección)
+            if sel_string in self.completed_strings:
+                action = "Afinada (pausada)"
                 color = "green"
-                # marcar completado
-                self.completed_strings.add(sel_string)
-                self.update_completed_label()
-            else:
-                color = "red"
+                note_name, octave, _ = freq_to_note_name(freq_s)
+                self.note_label.config(text=f"{note_name}{octave}\n{action}", fg=color)
+                self.root.after(UPDATE_MS, self.update_loop)
+                return
 
-            # mostrar nota detectada y acción
-            note_name, octave, note_freq = freq_to_note_name(freq_s)
-            display = f"{note_name}{octave}\n{action}"
-            self.note_label.config(text=display, fg=color)
-            # actualizar textos
+            # Requerir estabilidad: solo tomar referencia si la frecuencia se ha mantenido estable > STABLE_MS_REQUIRED
+            stable = self._is_freq_stable(freq_s)
+
+            if not stable:
+                # mostrar estado esperando estabilidad
+                if abs(cents) <= GREEN_CENTS:
+                    action = "Afinada (esperando estabilidad)"
+                    color = "green"
+                    self.completed_strings.add(sel_string)
+                    self.update_completed_label()
+                else:
+                    action = "Esperando frecuencia estable"
+                    color = "black"
+                note_name, octave, _ = freq_to_note_name(freq_s)
+                self.note_label.config(text=f"{note_name}{octave}\n{action}", fg=color)
+                self.root.after(UPDATE_MS, self.update_loop)
+                return
+
+            # Si estable y fuera del rango naranja, iniciar afinado automático (thread)
+            if abs(cents) > ORANGE_CENTS and self.motor_enabled_var.get() and self.motor:
+                # evitar lanzar múltiples threads
+                if not hasattr(self, "_tuning_thread") or not getattr(self, "_tuning_thread").is_alive():
+                    cents_snapshot = cents
+                    # iniciar algoritmo iterativo en hilo aparte
+                    def tuning_task():
+                        self.iterative_tune(cents_snapshot, np.sign(cents_snapshot))
+                    self._tuning_thread = threading.Thread(target=tuning_task, daemon=True)
+                    self._tuning_thread.start()
+                if cents < -ORANGE_CENTS:
+                    action = "Grave → tensar"
+                else:
+                    action = "Agudo → aflojar"
+                color = "red"
+            else:
+                if abs(cents) <= GREEN_CENTS:
+                    action = "Afinada"
+                    color = "green"
+                    self.completed_strings.add(sel_string)
+                    self.update_completed_label()
+                elif abs(cents) <= ORANGE_CENTS:
+                    action = "Cerca"
+                    color = "orange"
+                else:
+                    action = "Estable, sin acción"
+                    color = "black"
+
+            note_name, octave, _ = freq_to_note_name(freq_s)
+            self.note_label.config(text=f"{note_name}{octave}\n{action}", fg=color)
             self.root.after(UPDATE_MS, self.update_loop)
             return
 
-        # modo normal: mostrar nota detectada (solfeo)
+        # Normal mode
         note_name, octave, note_freq = freq_to_note_name(freq_s)
-        cents_to_note = cents_difference(freq_s, note_freq) if note_freq else None
+        cents_to_note = cents_difference(freq_s, note_freq) if note_freq else 0
         self.freq_var.set(f"Freq: {freq_s:.1f} Hz")
-        if cents_to_note is None:
-            self.cents_var.set("Cents: -")
-        else:
-            self.cents_var.set(f"Cents to {note_name}{octave}: {cents_to_note:+.1f}")
-        # color por cercanía al semitono más cercano
-        color = "green" if (cents_to_note is not None and abs(cents_to_note) <= GREEN_CENTS) else ("orange" if (cents_to_note is not None and abs(cents_to_note) <= ORANGE_CENTS) else "black")
+        self.cents_var.set(f"Cents: {cents_to_note:+.1f}")
+        color = "green" if abs(cents_to_note) <= GREEN_CENTS else "orange" if abs(cents_to_note) <= ORANGE_CENTS else "black"
         self.note_label.config(text=f"{note_name}{octave}", fg=color)
 
         self.root.after(UPDATE_MS, self.update_loop)
