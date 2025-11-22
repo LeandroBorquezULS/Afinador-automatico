@@ -22,23 +22,25 @@ class TunerApp:
     def __init__(self, root):
         self.root = root
         root.title("Afinador con control de ESP32")
-        # Centrar ventana al iniciar
-        self.root.update_idletasks()
-        w = 700
-        h = 600
-        x = (self.root.winfo_screenwidth() // 2) - (w // 2)
-        y = (self.root.winfo_screenheight() // 2) - (h // 2)
-        self.root.geometry(f"{w}x{h}+{x}+{y}")
+        # --- ICONO DE LA VENTANA PRINCIPAL ---
+        try:
+            root.iconbitmap("icono.ico")
+        except Exception:
+            try:
+                icon_img = tk.PhotoImage(file="icono.png")
+                root.iconphoto(True, icon_img)
+            except Exception:
+                pass
 
         self.running = False
         self.device_index = None
-        self.device_map = {}  # Asegura que device_map esté disponible
+        self.device_map = {}
         self.history = deque(maxlen=SMOOTH_N)
         self.mode_var = tk.StringVar(value="Normal")
         self.string_var = tk.StringVar()
         self.completed_strings = set()
-        self.cents_per_step_var = tk.DoubleVar(value=1.0)  # ajustar mediante calibración
-        self.max_steps_var = tk.IntVar(value=50)          # "n" inicial por acción
+        self.cents_per_step_var = tk.DoubleVar(value=1.0)
+        self.max_steps_var = tk.IntVar(value=50)
         self.step_timeout_var = tk.DoubleVar(value=8.0)
         self.motor_enabled_var = tk.BooleanVar(value=True)
 
@@ -48,32 +50,60 @@ class TunerApp:
         self.motor = None
         self.ser = None
 
-        # estabilidad
         self._stable_candidate_freq = None
         self._stable_since = None
 
         # --- CARGA DE ICONOS PARA BOTONES ---
-        def cargar_icono(path, size=None):
-            try:
-                img = Image.open(path)
-                if size:
-                    img = img.resize(size)
-                return ImageTk.PhotoImage(img)
-            except Exception:
-                return None
+        self.icon_play = None
+        self.icon_stop = None
+        self.icon_reset = None
+        self.icon_tocar = None
+        self.icon_boton_detener = None
+        self.icon_logo = None
+        try:
+            self.icon_play = tk.PhotoImage(file="play.png")
+        except Exception:
+            pass
+        try:
+            self.icon_stop = tk.PhotoImage(file="stop.png")
+        except Exception:
+            pass
+        try:
+            self.icon_reset = tk.PhotoImage(file="reset.png")
+        except Exception:
+            pass
+        try:
+            self.icon_tocar = tk.PhotoImage(file="tocar.png")
+        except Exception:
+            pass
+        try:
+            self.icon_boton_detener = tk.PhotoImage(file="boton-detener.png")
+        except Exception:
+            pass
+        try:
+            self.icon_logo = tk.PhotoImage(file="logo.png")
+        except Exception:
+            self.icon_logo = None
 
         iconos_path = os.path.join(os.path.dirname(__file__), "Iconos")
-        self.img_tocar = cargar_icono(os.path.join(iconos_path, "tocar.png"), (48, 48))
-        self.img_detener = cargar_icono(os.path.join(iconos_path, "boton-detener.png"), (48, 48))
-        self.img_ajuste = cargar_icono(os.path.join(iconos_path, "ajuste.png"), (32, 32))
-        self.img_microfono = cargar_icono(os.path.join(iconos_path, "microfono.png"), (24, 24))
-        self.img_reiniciar = cargar_icono(os.path.join(iconos_path, "rotacion-de-flecha-circular-en-sentido-antihorario.png"), (32, 32))
+        self.img_tocar = ImageTk.PhotoImage(Image.open(os.path.join(iconos_path, "tocar.png")).resize((48, 48)))
+        self.img_detener = ImageTk.PhotoImage(Image.open(os.path.join(iconos_path, "boton-detener.png")).resize((48, 48)))
+        self.img_ajuste = ImageTk.PhotoImage(Image.open(os.path.join(iconos_path, "ajuste.png")).resize((32, 32)))
+        self.img_microfono = ImageTk.PhotoImage(Image.open(os.path.join(iconos_path, "microfono.png")).resize((24, 24)))
+        self.img_reiniciar = ImageTk.PhotoImage(
+            Image.open(os.path.join(iconos_path, "rotacion-de-flecha-circular-en-sentido-antihorario.png")).resize((32, 32))
+        )
 
-        self.nivel_var = tk.StringVar(value="Nivel: 0")  # <-- asegúrate de que esto esté aquí y antes de build_ui()
+        self.nivel_var = tk.StringVar(value="Nivel: 0")
         self.build_ui()
         self.populate_devices()
         self.try_open_serial()
         self.advanced_vars = {}
+
+        self._esta_iniciando = False
+
+        self.nivel_thread = None
+        self.nivel_stop = None
 
         # --- BOTÓN TOGGLE INICIAR/DETENER (icono PNG) ---
         # self.boton_toggle = tk.Button(root, image=self.img_tocar, command=self.toggle_iniciar_detener)
@@ -84,12 +114,6 @@ class TunerApp:
         # self.start_btn = ttk.Button(...)  # ELIMINADO
         # self.boton_config = tk.Button(...)  # ELIMINADO si era de texto, deja solo el de imagen si lo tienes
         # adv_btn = ttk.Button(...)  # ELIMINADO
-
-        # Estado interno para saber si está corriendo
-        self._esta_iniciando = False
-
-        self.nivel_thread = None
-        self.nivel_stop = None
 
     def toggle_iniciar_detener(self):
         """Alterna entre iniciar y detener el afinador."""
