@@ -92,35 +92,33 @@ class TunerApp:
         self.img_tocar = ImageTk.PhotoImage(Image.open(os.path.join(iconos_path, "tocar.png")).resize((48, 48)))
         self.img_detener = ImageTk.PhotoImage(Image.open(os.path.join(iconos_path, "boton-detener.png")).resize((48, 48)))
         self.img_ajuste = ImageTk.PhotoImage(Image.open(os.path.join(iconos_path, "ajuste.png")).resize((32, 32)))
-        # Carga el icono de micrófono
         self.img_microfono = ImageTk.PhotoImage(Image.open(os.path.join(iconos_path, "microfono.png")).resize((24, 24)))
+        # Corrige la extensión del icono de reiniciar a .png
+        self.img_reiniciar = ImageTk.PhotoImage(
+            Image.open(os.path.join(iconos_path, "rotacion-de-flecha-circular-en-sentido-antihorario.png")).resize((32, 32))
+        )
 
         self.build_ui()
         self.populate_devices()
         self.try_open_serial()
         self.advanced_vars = {}
 
-        # --- BOTÓN TOGGLE INICIAR/DETENER ---
-        self.boton_toggle = tk.Button(root, image=self.img_tocar, command=self.toggle_iniciar_detener)
-        self.boton_toggle.image = self.img_tocar
-        self.boton_toggle.pack()
+        # --- BOTÓN TOGGLE INICIAR/DETENER (icono PNG) ---
+        # self.boton_toggle = tk.Button(root, image=self.img_tocar, command=self.toggle_iniciar_detener)
+        # self.boton_toggle.image = self.img_tocar
+        # self.boton_toggle.pack()
 
-        # Elimina los botones individuales:
-        # self.boton_iniciar = ...
-        # self.boton_detener = ...
-
-        self.boton_config = tk.Button(root, image=self.img_ajuste, command=self.configuracion_avanzada)
-        self.boton_config.image = self.img_ajuste
-        self.boton_config.pack()
+        # Elimina los botones de tkinter de opciones avanzadas y de iniciar/detener (solo deja los iconos PNG):
+        # self.start_btn = ttk.Button(...)  # ELIMINADO
+        # self.boton_config = tk.Button(...)  # ELIMINADO si era de texto, deja solo el de imagen si lo tienes
+        # adv_btn = ttk.Button(...)  # ELIMINADO
 
         # Estado interno para saber si está corriendo
         self._esta_iniciando = False
 
         self.nivel_var = tk.StringVar(value="Nivel: 0")
         self.barra_nivel = ttk.Progressbar(self.root, orient="horizontal", length=250, mode="determinate", maximum=1000)
-        self.barra_nivel.pack(pady=(2, 0))
         self.nivel_label = ttk.Label(self.root, textvariable=self.nivel_var)
-        self.nivel_label.pack()
         self.nivel_thread = None
         self.nivel_stop = None
 
@@ -137,7 +135,6 @@ class TunerApp:
             self._esta_iniciando = False
 
     def iniciar(self):
-        # Lógica para iniciar (puedes llamar a self.start() si quieres la lógica original)
         self.start()
         # Inicia la barra de nivel del micrófono
         try:
@@ -147,7 +144,6 @@ class TunerApp:
             self.nivel_var.set(f"Error: {e}")
 
     def detener(self):
-        # Lógica para detener (puedes llamar a self.stop() si quieres la lógica original)
         self.stop()
         # Detiene y limpia la barra de nivel del micrófono
         try:
@@ -208,29 +204,47 @@ class TunerApp:
 
         btns = ttk.Frame(frm)
         btns.pack(fill='x', pady=6)
-        # --- BOTÓN INICIAR/DETENER CON CAMBIO DE ICONO Y TEXTO ---
-        self.start_btn = ttk.Button(
+        # --- Botón único de tocar/detener (cambia de imagen según estado) ---
+        self.boton_toggle = tk.Button(
             btns,
-            text="Iniciar",
-            command=self.toggle_start_stop,
-            image=self.icon_play,  # icono inicial
-            compound="left" if self.icon_play else None
+            image=self.img_tocar,
+            command=self.toggle_iniciar_detener,
+            borderwidth=0,
+            highlightthickness=0,
+            relief="flat"
         )
-        self.start_btn.grid(row=0, column=0, padx=4)
-        # El botón detener ya no es necesario como botón separado
-        # El botón de reiniciar completadas permanece igual
-        ttk.Button(
-            btns, text="Reiniciar completadas", command=self.reset_completed,
-            image=self.icon_reset, compound="left" if self.icon_reset else None
+        self.boton_toggle.grid(row=0, column=0, padx=6)
+        # Botón de reiniciar completadas
+        tk.Button(
+            btns,
+            image=self.img_reiniciar,
+            command=self.reset_completed,
+            borderwidth=0,
+            highlightthickness=0,
+            relief="flat"
         ).grid(row=0, column=1, padx=6)
+        # Botón de ajuste
+        tk.Button(
+            btns,
+            image=self.img_ajuste,
+            command=self.configuracion_avanzada,
+            borderwidth=0,
+            highlightthickness=0,
+            relief="flat"
+        ).grid(row=0, column=2, padx=6)
 
-        # --- BOTÓN OPCIONES AVANZADAS ---
-        adv_btn = ttk.Button(frm, text="Opciones avanzadas", command=self.open_advanced_options)
-        adv_btn.pack(fill='x', pady=(0, 8))
-
+        # 1) Widget de notas (self.note_label)
         self.note_label = tk.Label(self.root, text="—", font=("Arial", 44), width=16)
         self.note_label.pack(pady=8)
 
+        # 2) Barra del micrófono (self.barra_nivel y self.nivel_label)
+        self.barra_nivel = ttk.Progressbar(self.root, orient="horizontal", length=250, mode="determinate", maximum=1000)
+        self.nivel_var = tk.StringVar(value="Nivel: 0")
+        self.nivel_label = ttk.Label(self.root, textvariable=self.nivel_var)
+        self.barra_nivel.pack(pady=(2, 0))
+        self.nivel_label.pack()
+
+        # --- Mueve el frame de detalles aquí ---
         details = ttk.Frame(self.root)
         details.pack(fill='x')
         self.freq_var = tk.StringVar(value="Freq: - Hz")
@@ -241,6 +255,7 @@ class TunerApp:
         ttk.Label(details, text="Completadas:").grid(row=0, column=2, padx=(20,2))
         ttk.Label(details, textvariable=self.completed_label_var).grid(row=0, column=3, padx=2)
 
+        # 3) Gráfica (self.canvas)
         fig = Figure(figsize=(7,3))
         self.ax = fig.add_subplot(111)
         self.ax.set_xlabel("Frecuencia [Hz]")
@@ -252,6 +267,16 @@ class TunerApp:
         self.canvas = FigureCanvasTkAgg(fig, master=self.root)
         self.canvas.get_tk_widget().pack(fill='both', expand=True, padx=6, pady=6)
         fig.tight_layout()
+
+        # detalles = ttk.Frame(self.root)
+        # detalles.pack(fill='x')
+        # self.freq_var = tk.StringVar(value="Freq: - Hz")
+        # self.cents_var = tk.StringVar(value="Cents: -")
+        # self.completed_label_var = tk.StringVar(value="No completadas")
+        # ttk.Label(detalles, textvariable=self.freq_var).grid(row=0, column=0, padx=6)
+        # ttk.Label(detalles, textvariable=self.cents_var).grid(row=0, column=1, padx=6)
+        # ttk.Label(detalles, text="Completadas:").grid(row=0, column=2, padx=(20,2))
+        # ttk.Label(detalles, textvariable=self.completed_label_var).grid(row=0, column=3, padx=2)
 
     def populate_devices(self):
         devs = sd.query_devices()
@@ -324,25 +349,21 @@ class TunerApp:
         self.running = False
         if self.motor:
             self.motor.stop()
-        # Restaura el icono y texto del botón iniciar
-        if self.icon_play:
-            self.start_btn.config(image=self.icon_play, text="Iniciar")
-        else:
-            self.start_btn.config(text="Iniciar")
-        # Restaura el icono del botón detener
-        if self.icon_stop:
-            self.stop_btn.config(image=self.icon_stop)
+        # Elimina cualquier referencia a self.start_btn y self.stop_btn, ya que no existen:
+        # if self.icon_play:
+        #     self.start_btn.config(image=self.icon_play, text="Iniciar")
+        # else:
+        #     self.start_btn.config(text="Iniciar")
+        # if self.icon_stop:
+        #     self.stop_btn.config(image=self.icon_stop)
         # --- LIMPIA LA INTERFAZ ---
-        # Limpia gráfico FFT
         self.fft_data = np.zeros(len(self.freq_axis))
         self.line.set_ydata(self.fft_data)
         self.ax.set_ylim(0, 1e-6)
         self.canvas.draw_idle()
-        # Limpia etiquetas de nota y frecuencia
         self.note_label.config(text="—", fg="black")
         self.freq_var.set("Freq: - Hz")
         self.cents_var.set("Cents: -")
-        # Limpia barra de nivel de micrófono
         self.barra_nivel['value'] = 0
         self.nivel_var.set("Nivel: 0")
 
