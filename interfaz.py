@@ -22,17 +22,13 @@ class TunerApp:
     def __init__(self, root):
         self.root = root
         root.title("Afinador con control de ESP32")
-        # --- ICONO DE LA VENTANA PRINCIPAL ---
-        try:
-            # Usa un archivo .ico para Windows
-            root.iconbitmap("icono.ico")
-        except Exception:
-            # Alternativa multiplataforma (requiere icono en PNG)
-            try:
-                icon_img = tk.PhotoImage(file="icono.png")
-                root.iconphoto(True, icon_img)
-            except Exception:
-                pass  # Si no hay icono, sigue sin error
+        # Centrar ventana al iniciar
+        self.root.update_idletasks()
+        w = 700
+        h = 600
+        x = (self.root.winfo_screenwidth() // 2) - (w // 2)
+        y = (self.root.winfo_screenheight() // 2) - (h // 2)
+        self.root.geometry(f"{w}x{h}+{x}+{y}")
 
         self.running = False
         self.device_index = None
@@ -57,47 +53,23 @@ class TunerApp:
         self._stable_since = None
 
         # --- CARGA DE ICONOS PARA BOTONES ---
-        self.icon_play = None
-        self.icon_stop = None
-        self.icon_reset = None
-        self.icon_tocar = None
-        self.icon_boton_detener = None
-        self.icon_logo = None  # Para el PNG decorativo
-        try:
-            self.icon_play = tk.PhotoImage(file="play.png")
-        except Exception:
-            pass
-        try:
-            self.icon_stop = tk.PhotoImage(file="stop.png")
-        except Exception:
-            pass
-        try:
-            self.icon_reset = tk.PhotoImage(file="reset.png")
-        except Exception:
-            pass
-        try:
-            self.icon_tocar = tk.PhotoImage(file="tocar.png")
-        except Exception:
-            pass
-        try:
-            self.icon_boton_detener = tk.PhotoImage(file="boton-detener.png")
-        except Exception:
-            pass
-        try:
-            self.icon_logo = tk.PhotoImage(file="logo.png")  # Cambia "logo.png" por el nombre de tu archivo
-        except Exception:
-            self.icon_logo = None
+        def cargar_icono(path, size=None):
+            try:
+                img = Image.open(path)
+                if size:
+                    img = img.resize(size)
+                return ImageTk.PhotoImage(img)
+            except Exception:
+                return None
 
         iconos_path = os.path.join(os.path.dirname(__file__), "Iconos")
-        self.img_tocar = ImageTk.PhotoImage(Image.open(os.path.join(iconos_path, "tocar.png")).resize((48, 48)))
-        self.img_detener = ImageTk.PhotoImage(Image.open(os.path.join(iconos_path, "boton-detener.png")).resize((48, 48)))
-        self.img_ajuste = ImageTk.PhotoImage(Image.open(os.path.join(iconos_path, "ajuste.png")).resize((32, 32)))
-        self.img_microfono = ImageTk.PhotoImage(Image.open(os.path.join(iconos_path, "microfono.png")).resize((24, 24)))
-        # Corrige la extensión del icono de reiniciar a .png
-        self.img_reiniciar = ImageTk.PhotoImage(
-            Image.open(os.path.join(iconos_path, "rotacion-de-flecha-circular-en-sentido-antihorario.png")).resize((32, 32))
-        )
+        self.img_tocar = cargar_icono(os.path.join(iconos_path, "tocar.png"), (48, 48))
+        self.img_detener = cargar_icono(os.path.join(iconos_path, "boton-detener.png"), (48, 48))
+        self.img_ajuste = cargar_icono(os.path.join(iconos_path, "ajuste.png"), (32, 32))
+        self.img_microfono = cargar_icono(os.path.join(iconos_path, "microfono.png"), (24, 24))
+        self.img_reiniciar = cargar_icono(os.path.join(iconos_path, "rotacion-de-flecha-circular-en-sentido-antihorario.png"), (32, 32))
 
+        self.nivel_var = tk.StringVar(value="Nivel: 0")  # <-- asegúrate de que esto esté aquí y antes de build_ui()
         self.build_ui()
         self.populate_devices()
         self.try_open_serial()
@@ -116,35 +88,40 @@ class TunerApp:
         # Estado interno para saber si está corriendo
         self._esta_iniciando = False
 
-        self.nivel_var = tk.StringVar(value="Nivel: 0")
-        self.barra_nivel = ttk.Progressbar(self.root, orient="horizontal", length=250, mode="determinate", maximum=1000)
-        self.nivel_label = ttk.Label(self.root, textvariable=self.nivel_var)
         self.nivel_thread = None
         self.nivel_stop = None
 
     def toggle_iniciar_detener(self):
+        """Alterna entre iniciar y detener el afinador."""
         if not self._esta_iniciando:
             self.iniciar()
-            self.boton_toggle.config(image=self.img_detener, command=self.toggle_iniciar_detener)
+            self.boton_toggle.config(image=self.img_detener, command=self.toggle_iniciar_detener, state="normal")
             self.boton_toggle.image = self.img_detener
             self._esta_iniciando = True
         else:
             self.detener()
-            self.boton_toggle.config(image=self.img_tocar, command=self.toggle_iniciar_detener)
+            self.boton_toggle.config(image=self.img_tocar, command=self.toggle_iniciar_detener, state="normal")
             self.boton_toggle.image = self.img_tocar
             self._esta_iniciando = False
 
     def iniciar(self):
+        """Inicia el afinador y la barra de nivel del micrófono."""
+        self.boton_toggle.config(state="disabled")
         self.start()
-        # Inicia la barra de nivel del micrófono
+        self.boton_toggle.config(state="normal")
+        # Inicia la barra de nivel del micrófono SOLO si no hay un hilo corriendo
         try:
-            indice_microfono = self.device_index if self.device_index is not None else 0
-            self.nivel_thread, self.nivel_stop = probar_nivel_microfono(indice_microfono, self.barra_nivel, self.nivel_var)
+            if self.nivel_thread is None or not self.nivel_thread.is_alive():
+                indice_microfono = self.device_index if self.device_index is not None else 0
+                self.nivel_thread, self.nivel_stop = probar_nivel_microfono(indice_microfono, self.barra_nivel, self.nivel_var)
         except Exception as e:
             self.nivel_var.set(f"Error: {e}")
 
     def detener(self):
+        """Detiene el afinador y la barra de nivel del micrófono."""
+        self.boton_toggle.config(state="disabled")
         self.stop()
+        self.boton_toggle.config(state="normal")
         # Detiene y limpia la barra de nivel del micrófono
         try:
             if self.nivel_stop is not None:
@@ -189,6 +166,7 @@ class TunerApp:
         self.string_combo['values'] = list(GUITAR_STRINGS.keys())
         self.string_combo.grid(row=0, column=1, padx=6)
         self.string_combo.current(0)
+        # Mejora: deshabilita el botón de cuerda si no es modo guitarra
         self.string_combo.config(state='disabled')
 
         conf_row = ttk.Frame(frm)
@@ -239,9 +217,8 @@ class TunerApp:
 
         # 2) Barra del micrófono (self.barra_nivel y self.nivel_label)
         self.barra_nivel = ttk.Progressbar(self.root, orient="horizontal", length=250, mode="determinate", maximum=1000)
-        self.nivel_var = tk.StringVar(value="Nivel: 0")
-        self.nivel_label = ttk.Label(self.root, textvariable=self.nivel_var)
         self.barra_nivel.pack(pady=(2, 0))
+        self.nivel_label = ttk.Label(self.root, textvariable=self.nivel_var)
         self.nivel_label.pack()
 
         # --- Mueve el frame de detalles aquí ---
@@ -332,6 +309,7 @@ class TunerApp:
             self.stop()
 
     def start(self):
+        """Inicia la adquisición de audio y la actualización de la interfaz."""
         if self.running:
             return
         try:
@@ -344,18 +322,19 @@ class TunerApp:
             self.try_open_serial()
         self.running = True
         self.root.after(10, self.update_loop)
+        # Inicia la barra de nivel del micrófono si no está corriendo
+        try:
+            if self.nivel_thread is None or not self.nivel_thread.is_alive():
+                indice_microfono = self.device_index if self.device_index is not None else 0
+                self.nivel_thread, self.nivel_stop = probar_nivel_microfono(indice_microfono, self.barra_nivel, self.nivel_var)
+        except Exception as e:
+            self.nivel_var.set(f"Error: {e}")
 
     def stop(self):
+        """Detiene la adquisición de audio y limpia la interfaz."""
         self.running = False
         if self.motor:
             self.motor.stop()
-        # Elimina cualquier referencia a self.start_btn y self.stop_btn, ya que no existen:
-        # if self.icon_play:
-        #     self.start_btn.config(image=self.icon_play, text="Iniciar")
-        # else:
-        #     self.start_btn.config(text="Iniciar")
-        # if self.icon_stop:
-        #     self.stop_btn.config(image=self.icon_stop)
         # --- LIMPIA LA INTERFAZ ---
         self.fft_data = np.zeros(len(self.freq_axis))
         self.line.set_ydata(self.fft_data)
@@ -364,6 +343,16 @@ class TunerApp:
         self.note_label.config(text="—", fg="black")
         self.freq_var.set("Freq: - Hz")
         self.cents_var.set("Cents: -")
+        # Detiene y limpia la barra de nivel del micrófono
+        try:
+            if self.nivel_stop is not None:
+                self.nivel_stop.set()
+            if self.nivel_thread is not None and self.nivel_thread.is_alive():
+                self.nivel_thread.join(timeout=1)
+        except Exception:
+            pass
+        self.nivel_thread = None
+        self.nivel_stop = None
         self.barra_nivel['value'] = 0
         self.nivel_var.set("Nivel: 0")
 
@@ -594,6 +583,7 @@ class TunerApp:
         self.root.after(UPDATE_MS, self.update_loop)
 
     def open_advanced_options(self):
+        """Abre la ventana de configuración avanzada."""
         # Ventana de opciones avanzadas
         win = tk.Toplevel(self.root)
         win.title("Opciones avanzadas")
