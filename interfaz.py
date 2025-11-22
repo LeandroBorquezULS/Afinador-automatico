@@ -7,21 +7,36 @@ import sounddevice as sd
 from collections import deque
 import threading
 import time
+from PIL import Image, ImageTk
+import os
+from microfono import probar_nivel_microfono
 
+# Importa todos los parámetros globales necesarios desde main.py
 from main import (
-    FS, CHUNK, UPDATE_MS, SMOOTH_N, A4_FREQ,
-    ORANGE_CENTS, GREEN_CENTS, STABLE_MS_REQUIRED, STABLE_CENTS_THRESHOLD,
-    SOLFEGE, GUITAR_STRINGS,
-    freq_to_note_name, cents_difference, get_freq_autocorr,
-    find_esp32_port, open_serial, MotorController
+    SMOOTH_N, FS, CHUNK, UPDATE_MS, GREEN_CENTS, ORANGE_CENTS, STABLE_MS_REQUIRED,
+    STABLE_CENTS_THRESHOLD, A4_FREQ, GUITAR_STRINGS, freq_to_note_name, cents_difference,
+    get_freq_autocorr, find_esp32_port, open_serial, MotorController
 )
 
 class TunerApp:
     def __init__(self, root):
         self.root = root
         root.title("Afinador con control de ESP32")
+        # --- ICONO DE LA VENTANA PRINCIPAL ---
+        try:
+            # Usa un archivo .ico para Windows
+            root.iconbitmap("icono.ico")
+        except Exception:
+            # Alternativa multiplataforma (requiere icono en PNG)
+            try:
+                icon_img = tk.PhotoImage(file="icono.png")
+                root.iconphoto(True, icon_img)
+            except Exception:
+                pass  # Si no hay icono, sigue sin error
+
         self.running = False
         self.device_index = None
+        self.device_map = {}  # Asegura que device_map esté disponible
         self.history = deque(maxlen=SMOOTH_N)
         self.mode_var = tk.StringVar(value="Normal")
         self.string_var = tk.StringVar()
@@ -41,17 +56,129 @@ class TunerApp:
         self._stable_candidate_freq = None
         self._stable_since = None
 
+        # --- CARGA DE ICONOS PARA BOTONES ---
+        self.icon_play = None
+        self.icon_stop = None
+        self.icon_reset = None
+        self.icon_tocar = None
+        self.icon_boton_detener = None
+        self.icon_logo = None  # Para el PNG decorativo
+        try:
+            self.icon_play = tk.PhotoImage(file="play.png")
+        except Exception:
+            pass
+        try:
+            self.icon_stop = tk.PhotoImage(file="stop.png")
+        except Exception:
+            pass
+        try:
+            self.icon_reset = tk.PhotoImage(file="reset.png")
+        except Exception:
+            pass
+        try:
+            self.icon_tocar = tk.PhotoImage(file="tocar.png")
+        except Exception:
+            pass
+        try:
+            self.icon_boton_detener = tk.PhotoImage(file="boton-detener.png")
+        except Exception:
+            pass
+        try:
+            self.icon_logo = tk.PhotoImage(file="logo.png")  # Cambia "logo.png" por el nombre de tu archivo
+        except Exception:
+            self.icon_logo = None
+
+        iconos_path = os.path.join(os.path.dirname(__file__), "Iconos")
+        self.img_tocar = ImageTk.PhotoImage(Image.open(os.path.join(iconos_path, "tocar.png")).resize((48, 48)))
+        self.img_detener = ImageTk.PhotoImage(Image.open(os.path.join(iconos_path, "boton-detener.png")).resize((48, 48)))
+        self.img_ajuste = ImageTk.PhotoImage(Image.open(os.path.join(iconos_path, "ajuste.png")).resize((32, 32)))
+        # Carga el icono de micrófono
+        self.img_microfono = ImageTk.PhotoImage(Image.open(os.path.join(iconos_path, "microfono.png")).resize((24, 24)))
+
         self.build_ui()
         self.populate_devices()
         self.try_open_serial()
+        self.advanced_vars = {}
+
+        # --- BOTÓN TOGGLE INICIAR/DETENER ---
+        self.boton_toggle = tk.Button(root, image=self.img_tocar, command=self.toggle_iniciar_detener)
+        self.boton_toggle.image = self.img_tocar
+        self.boton_toggle.pack()
+
+        # Elimina los botones individuales:
+        # self.boton_iniciar = ...
+        # self.boton_detener = ...
+
+        self.boton_config = tk.Button(root, image=self.img_ajuste, command=self.configuracion_avanzada)
+        self.boton_config.image = self.img_ajuste
+        self.boton_config.pack()
+
+        # Estado interno para saber si está corriendo
+        self._esta_iniciando = False
+
+        self.nivel_var = tk.StringVar(value="Nivel: 0")
+        self.barra_nivel = ttk.Progressbar(self.root, orient="horizontal", length=250, mode="determinate", maximum=1000)
+        self.barra_nivel.pack(pady=(2, 0))
+        self.nivel_label = ttk.Label(self.root, textvariable=self.nivel_var)
+        self.nivel_label.pack()
+        self.nivel_thread = None
+        self.nivel_stop = None
+
+    def toggle_iniciar_detener(self):
+        if not self._esta_iniciando:
+            self.iniciar()
+            self.boton_toggle.config(image=self.img_detener, command=self.toggle_iniciar_detener)
+            self.boton_toggle.image = self.img_detener
+            self._esta_iniciando = True
+        else:
+            self.detener()
+            self.boton_toggle.config(image=self.img_tocar, command=self.toggle_iniciar_detener)
+            self.boton_toggle.image = self.img_tocar
+            self._esta_iniciando = False
+
+    def iniciar(self):
+        # Lógica para iniciar (puedes llamar a self.start() si quieres la lógica original)
+        self.start()
+        # Inicia la barra de nivel del micrófono
+        try:
+            indice_microfono = self.device_index if self.device_index is not None else 0
+            self.nivel_thread, self.nivel_stop = probar_nivel_microfono(indice_microfono, self.barra_nivel, self.nivel_var)
+        except Exception as e:
+            self.nivel_var.set(f"Error: {e}")
+
+    def detener(self):
+        # Lógica para detener (puedes llamar a self.stop() si quieres la lógica original)
+        self.stop()
+        # Detiene y limpia la barra de nivel del micrófono
+        try:
+            if self.nivel_stop is not None:
+                self.nivel_stop.set()
+            if self.nivel_thread is not None and self.nivel_thread.is_alive():
+                self.nivel_thread.join(timeout=1)
+        except Exception:
+            pass
+        self.nivel_thread = None
+        self.nivel_stop = None
+        self.barra_nivel['value'] = 0
+        self.nivel_var.set("Nivel: 0")
+        # ...ya se limpia el gráfico y notas en stop()...
+
+    def configuracion_avanzada(self):
+        self.open_advanced_options()
 
     def build_ui(self):
         frm = ttk.Frame(self.root)
         frm.pack(padx=8, pady=8, fill='x')
 
+        # --- AGREGA EL PNG DECORATIVO EN LA PARTE SUPERIOR ---
+        if self.icon_logo:
+            logo_label = tk.Label(frm, image=self.icon_logo)
+            logo_label.pack(pady=(0, 8))
+
         top = ttk.Frame(frm)
         top.pack(fill='x', pady=4)
-        ttk.Label(top, text="Dispositivo entrada:").grid(row=0, column=0, sticky='w')
+        # --- AGREGA EL ICONO DE MICROFONO EN VEZ DEL TEXTO ---
+        tk.Label(top, image=self.img_microfono).grid(row=0, column=0, sticky='w', padx=(0, 4))
         self.device_combo = ttk.Combobox(top, state='readonly', width=60)
         self.device_combo.grid(row=0, column=1, padx=6)
         ttk.Label(top, text="Modo:").grid(row=0, column=2, sticky='e', padx=(10,0))
@@ -70,20 +197,36 @@ class TunerApp:
 
         conf_row = ttk.Frame(frm)
         conf_row.pack(fill='x', pady=2)
-        ttk.Label(conf_row, text="Cents/step (calibrar):").grid(row=0, column=0, sticky='w')
-        ttk.Entry(conf_row, textvariable=self.cents_per_step_var, width=8).grid(row=0, column=1, padx=4)
-        ttk.Label(conf_row, text="Max steps/action (n):").grid(row=0, column=2, sticky='w', padx=(8,0))
-        ttk.Entry(conf_row, textvariable=self.max_steps_var, width=6).grid(row=0, column=3, padx=4)
-        ttk.Label(conf_row, text="Step timeout (s):").grid(row=0, column=4, sticky='w', padx=(8,0))
-        ttk.Entry(conf_row, textvariable=self.step_timeout_var, width=6).grid(row=0, column=5, padx=4)
-        ttk.Checkbutton(conf_row, text="Motor enabled", variable=self.motor_enabled_var).grid(row=0, column=6, padx=(8,0))
+        # --- QUITA ESTOS CAMPOS DE LA INTERFAZ PRINCIPAL ---
+        # ttk.Label(conf_row, text="Cents/step (calibrar):").grid(row=0, column=0, sticky='w')
+        # ttk.Entry(conf_row, textvariable=self.cents_per_step_var, width=8).grid(row=0, column=1, padx=4)
+        # ttk.Label(conf_row, text="Max steps/action (n):").grid(row=0, column=2, sticky='w', padx=(8,0))
+        # ttk.Entry(conf_row, textvariable=self.max_steps_var, width=6).grid(row=0, column=3, padx=4)
+        # ttk.Label(conf_row, text="Step timeout (s):").grid(row=0, column=4, sticky='w', padx=(8,0))
+        # ttk.Entry(conf_row, textvariable=self.step_timeout_var, width=6).grid(row=0, column=5, padx=4)
+        # ttk.Checkbutton(conf_row, text="Motor enabled", variable=self.motor_enabled_var).grid(row=0, column=6, padx=(8,0))
 
         btns = ttk.Frame(frm)
         btns.pack(fill='x', pady=6)
-        self.start_btn = ttk.Button(btns, text="Iniciar", command=self.start)
+        # --- BOTÓN INICIAR/DETENER CON CAMBIO DE ICONO Y TEXTO ---
+        self.start_btn = ttk.Button(
+            btns,
+            text="Iniciar",
+            command=self.toggle_start_stop,
+            image=self.icon_play,  # icono inicial
+            compound="left" if self.icon_play else None
+        )
         self.start_btn.grid(row=0, column=0, padx=4)
-        ttk.Button(btns, text="Detener", command=self.stop).grid(row=0, column=1, padx=4)
-        ttk.Button(btns, text="Reiniciar completadas", command=self.reset_completed).grid(row=0, column=2, padx=6)
+        # El botón detener ya no es necesario como botón separado
+        # El botón de reiniciar completadas permanece igual
+        ttk.Button(
+            btns, text="Reiniciar completadas", command=self.reset_completed,
+            image=self.icon_reset, compound="left" if self.icon_reset else None
+        ).grid(row=0, column=1, padx=6)
+
+        # --- BOTÓN OPCIONES AVANZADAS ---
+        adv_btn = ttk.Button(frm, text="Opciones avanzadas", command=self.open_advanced_options)
+        adv_btn.pack(fill='x', pady=(0, 8))
 
         self.note_label = tk.Label(self.root, text="—", font=("Arial", 44), width=16)
         self.note_label.pack(pady=8)
@@ -118,10 +261,12 @@ class TunerApp:
                 in_devs.append((i, d.get('name', f"Device {i}")))
         values = [f"{i}: {name}" for i, name in in_devs]
         self.device_map = {f"{i}: {name}": i for i, name in in_devs}
-        self.device_combo['values'] = values
+        self.device_combo['values'] = values  # <-- vuelve a agregar esta línea
         if values:
             self.device_combo.current(0)
             self.device_index = self.device_map[self.device_combo.get()]
+        # Guarda la lista de dispositivos para opciones avanzadas
+        self._input_devices = values
 
     def try_open_serial(self):
         port = find_esp32_port()
@@ -143,6 +288,24 @@ class TunerApp:
         else:
             self.string_combo.config(state='disabled')
 
+    def toggle_start_stop(self):
+        if not self.running:
+            # Cambia icono y texto a "tocar.png" y "Detener"
+            if self.icon_tocar:
+                self.start_btn.config(image=self.icon_tocar, text="Detener")
+            else:
+                self.start_btn.config(text="Detener")
+            self.start()
+        else:
+            # Cambia icono y texto a "boton detener.png" y "Iniciar"
+            if self.icon_boton_detener:
+                self.start_btn.config(image=self.icon_boton_detener, text="Iniciar")
+            elif self.icon_play:
+                self.start_btn.config(image=self.icon_play, text="Iniciar")
+            else:
+                self.start_btn.config(text="Iniciar")
+            self.stop()
+
     def start(self):
         if self.running:
             return
@@ -161,6 +324,27 @@ class TunerApp:
         self.running = False
         if self.motor:
             self.motor.stop()
+        # Restaura el icono y texto del botón iniciar
+        if self.icon_play:
+            self.start_btn.config(image=self.icon_play, text="Iniciar")
+        else:
+            self.start_btn.config(text="Iniciar")
+        # Restaura el icono del botón detener
+        if self.icon_stop:
+            self.stop_btn.config(image=self.icon_stop)
+        # --- LIMPIA LA INTERFAZ ---
+        # Limpia gráfico FFT
+        self.fft_data = np.zeros(len(self.freq_axis))
+        self.line.set_ydata(self.fft_data)
+        self.ax.set_ylim(0, 1e-6)
+        self.canvas.draw_idle()
+        # Limpia etiquetas de nota y frecuencia
+        self.note_label.config(text="—", fg="black")
+        self.freq_var.set("Freq: - Hz")
+        self.cents_var.set("Cents: -")
+        # Limpia barra de nivel de micrófono
+        self.barra_nivel['value'] = 0
+        self.nivel_var.set("Nivel: 0")
 
     def reset_completed(self):
         self.completed_strings.clear()
@@ -217,10 +401,7 @@ class TunerApp:
 
             ok = self._move_and_wait(direction, steps)
             if not ok:
-                break
-
-            # pequeño retardo para nueva lectura
-            time.sleep(0.12)
+                break  # <--- Corrige la indentación aquí
 
             # esperar a que update_loop publique latest_cents
             t0 = time.time()
@@ -390,5 +571,93 @@ class TunerApp:
         self.note_label.config(text=f"{note_name}{octave}", fg=color)
 
         self.root.after(UPDATE_MS, self.update_loop)
+
+    def open_advanced_options(self):
+        # Ventana de opciones avanzadas
+        win = tk.Toplevel(self.root)
+        win.title("Opciones avanzadas")
+        win.grab_set()
+        frm = ttk.Frame(win, padding=12)
+        frm.pack(fill='both', expand=True)
+
+        # --- QUITA EL CAMPO DE DISPOSITIVO DE ENTRADA DE OPCIONES AVANZADAS ---
+        row = 0
+        # (No agregar el campo de dispositivo de entrada aquí)
+
+        # --- Parámetros a mostrar/editar ---
+        param_defs = [
+            ("FS", "Frecuencia de muestreo", int, "Hz"),
+            ("CHUNK", "Tamaño de bloque (CHUNK)", int, ""),
+            ("UPDATE_MS", "Intervalo actualización", int, "ms"),
+            ("SMOOTH_N", "Promedio frecuencias", int, ""),
+            ("A4_FREQ", "A4 (La4)", float, "Hz"),
+            ("ORANGE_CENTS", "Cents naranja", int, ""),
+            ("GREEN_CENTS", "Cents verde", int, ""),
+            ("STABLE_MS_REQUIRED", "Estabilidad requerida", int, "ms"),
+            ("STABLE_CENTS_THRESHOLD", "Tolerancia estabilidad", float, "cents"),
+        ]
+        self.advanced_vars = {}
+        for i, (key, label, typ, unit) in enumerate(param_defs):
+            ttk.Label(frm, text=label).grid(row=i, column=0, sticky='w', padx=4, pady=2)
+            val = globals().get(key, None)
+            var = tk.StringVar(value=str(val))
+            self.advanced_vars[key] = (var, typ)
+            ttk.Entry(frm, textvariable=var, width=12).grid(row=i, column=1, padx=4)
+            ttk.Label(frm, text=unit).grid(row=i, column=2, sticky='w')
+
+        # --- Campos de calibración del motor ---
+        row = len(param_defs)
+        ttk.Label(frm, text="Cents/step (calibrar):").grid(row=row, column=0, sticky='w', padx=4, pady=2)
+        cents_var = tk.StringVar(value=str(self.cents_per_step_var.get()))
+        ttk.Entry(frm, textvariable=cents_var, width=12).grid(row=row, column=1, padx=4)
+        ttk.Label(frm, text="").grid(row=row, column=2, sticky='w')
+
+        row += 1
+        ttk.Label(frm, text="Max steps/action (n):").grid(row=row, column=0, sticky='w', padx=4, pady=2)
+        max_steps_var = tk.StringVar(value=str(self.max_steps_var.get()))
+        ttk.Entry(frm, textvariable=max_steps_var, width=12).grid(row=row, column=1, padx=4)
+        ttk.Label(frm, text="").grid(row=row, column=2, sticky='w')
+
+        row += 1
+        ttk.Label(frm, text="Step timeout (s):").grid(row=row, column=0, sticky='w', padx=4, pady=2)
+        timeout_var = tk.StringVar(value=str(self.step_timeout_var.get()))
+        ttk.Entry(frm, textvariable=timeout_var, width=12).grid(row=row, column=1, padx=4)
+        ttk.Label(frm, text="").grid(row=row, column=2, sticky='w')
+
+        row += 1
+        motor_enabled_var = tk.BooleanVar(value=self.motor_enabled_var.get())
+        ttk.Checkbutton(frm, text="Motor enabled", variable=motor_enabled_var).grid(row=row, column=0, sticky='w', padx=4, pady=2)
+
+        def guardar():
+            # Ya no se cambia el dispositivo de entrada aquí
+            # Actualiza los parámetros globales
+            for key, (var, typ) in self.advanced_vars.items():
+                try:
+                    val = typ(var.get())
+                    globals()[key] = val
+                    import main
+                    setattr(main, key, val)
+                except Exception:
+                    pass
+            # Actualiza los parámetros de calibración del motor
+            try:
+                self.cents_per_step_var.set(float(cents_var.get()))
+            except Exception:
+                pass
+            try:
+                self.max_steps_var.set(int(max_steps_var.get()))
+            except Exception:
+                pass
+            try:
+                self.step_timeout_var.set(float(timeout_var.get()))
+            except Exception:
+                pass
+            self.motor_enabled_var.set(motor_enabled_var.get())
+            win.destroy()
+
+        btns = ttk.Frame(frm)
+        btns.grid(row=row+1, column=0, columnspan=3, pady=10)
+        ttk.Button(btns, text="Guardar", command=guardar).pack(side='left', padx=6)
+        ttk.Button(btns, text="Cancelar", command=win.destroy).pack(side='left', padx=6)
 
 
