@@ -18,32 +18,6 @@ from main import (
     get_freq_autocorr, find_esp32_port, open_serial, MotorController
 )
 
-class ToolTip:
-    def __init__(self, widget, text):
-        self.widget = widget
-        self.text = text
-        self.tipwindow = None
-        widget.bind("<Enter>", self.show_tip)
-        widget.bind("<Leave>", self.hide_tip)
-
-    def show_tip(self, event=None):
-        if self.tipwindow or not self.text:
-            return
-        x, y, cx, cy = self.widget.bbox("insert") if hasattr(self.widget, "bbox") else (0,0,0,0)
-        x = x + self.widget.winfo_rootx() + 25
-        y = y + self.widget.winfo_rooty() + 20
-        self.tipwindow = tw = tk.Toplevel(self.widget)
-        tw.wm_overrideredirect(True)
-        tw.wm_geometry(f"+{x}+{y}")
-        label = tk.Label(tw, text=self.text, background="#ffffe0", relief="solid", borderwidth=1, font=("tahoma", "8", "normal"))
-        label.pack(ipadx=2)
-
-    def hide_tip(self, event=None):
-        tw = self.tipwindow
-        self.tipwindow = None
-        if tw:
-            tw.destroy()
-
 class TunerApp:
     def __init__(self, root):
         self.root = root
@@ -201,9 +175,7 @@ class TunerApp:
         top = ttk.Frame(frm)
         top.pack(fill='x', pady=4)
         # --- AGREGA EL ICONO DE MICROFONO EN VEZ DEL TEXTO ---
-        mic_label = tk.Label(top, image=self.img_microfono)
-        mic_label.grid(row=0, column=0, sticky='w', padx=(0, 4))
-        ToolTip(mic_label, "Dispositivo de entrada")
+        tk.Label(top, image=self.img_microfono).grid(row=0, column=0, sticky='w', padx=(0, 4))
         self.device_combo = ttk.Combobox(top, state='readonly', width=60)
         self.device_combo.grid(row=0, column=1, padx=6)
         ttk.Label(top, text="Modo:").grid(row=0, column=2, sticky='e', padx=(10,0))
@@ -244,29 +216,24 @@ class TunerApp:
             relief="flat"
         )
         self.boton_toggle.grid(row=0, column=0, padx=6)
-        ToolTip(self.boton_toggle, "Iniciar / Detener")
         # Botón de reiniciar completadas
-        btn_reiniciar = tk.Button(
+        tk.Button(
             btns,
             image=self.img_reiniciar,
             command=self.reset_completed,
             borderwidth=0,
             highlightthickness=0,
             relief="flat"
-        )
-        btn_reiniciar.grid(row=0, column=1, padx=6)
-        ToolTip(btn_reiniciar, "Reiniciar completadas")
+        ).grid(row=0, column=1, padx=6)
         # Botón de ajuste
-        btn_ajuste = tk.Button(
+        tk.Button(
             btns,
             image=self.img_ajuste,
             command=self.configuracion_avanzada,
             borderwidth=0,
             highlightthickness=0,
             relief="flat"
-        )
-        btn_ajuste.grid(row=0, column=2, padx=6)
-        ToolTip(btn_ajuste, "Configuración")
+        ).grid(row=0, column=2, padx=6)
 
         # 1) Widget de notas (self.note_label)
         self.note_label = tk.Label(self.root, text="—", font=("Arial", 44), width=16)
