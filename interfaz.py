@@ -21,6 +21,7 @@ from main import (
 class TunerApp:
     def __init__(self, root):
         self.root = root
+        self.root.state('zoomed')
         root.title("Afinador con control de ESP32")
         # --- ICONO DE LA VENTANA PRINCIPAL ---
         try:
