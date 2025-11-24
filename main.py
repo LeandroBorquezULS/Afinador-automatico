@@ -115,7 +115,7 @@ class MotorController:
     def send_move(self, direction, steps, timeout=10.0):
         if not self.ser or not self.ser.is_open:
             return False
-        cmd = f"{direction}{int(steps)}\n"
+        cmd = f"{direction}{int(steps*5)}\n"
         with self.lock:
             self.last_response = None
         try:
@@ -154,3 +154,4 @@ if __name__ == "__main__":
     root = tk.Tk()
     app = TunerApp(root)
     root.mainloop()
+
