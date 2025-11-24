@@ -1,4 +1,4 @@
-##Afinador Automático
+## Afinador Automático
 
 Este proyecto es un **afinador automático** desarrollado con el objetivo principal de ofrecer una herramienta de fácil acceso y uso para músicos, estudiantes, y cualquier persona interesada en afinar instrumentos musicales de manera precisa y rápida.
 
