@@ -10,20 +10,16 @@ int stepDelay = 5;
 // Secuencia estándar para 28BYJ-48
 void stepMotor(int stepIndex) {
   switch (stepIndex) {
-    case 0: digitalWrite(IN1,1); digitalWrite(IN2,0); digitalWrite(IN3,0); digitalWrite(IN4,0); break;
-    case 1: digitalWrite(IN1,1); digitalWrite(IN2,1); digitalWrite(IN3,0); digitalWrite(IN4,0); break;
-    case 2: digitalWrite(IN1,0); digitalWrite(IN2,1); digitalWrite(IN3,0); digitalWrite(IN4,0); break;
-    case 3: digitalWrite(IN1,0); digitalWrite(IN2,1); digitalWrite(IN3,1); digitalWrite(IN4,0); break;
-    case 4: digitalWrite(IN1,0); digitalWrite(IN2,0); digitalWrite(IN3,1); digitalWrite(IN4,0); break;
-    case 5: digitalWrite(IN1,0); digitalWrite(IN2,0); digitalWrite(IN3,1); digitalWrite(IN4,1); break;
-    case 6: digitalWrite(IN1,0); digitalWrite(IN2,0); digitalWrite(IN3,0); digitalWrite(IN4,1); break;
-    case 7: digitalWrite(IN1,1); digitalWrite(IN2,0); digitalWrite(IN3,0); digitalWrite(IN4,1); break;
+    case 0: digitalWrite(IN1,1); digitalWrite(IN2,1); digitalWrite(IN3,0); digitalWrite(IN4,0); break;
+    case 1: digitalWrite(IN1,0); digitalWrite(IN2,1); digitalWrite(IN3,1); digitalWrite(IN4,0); break;
+    case 2: digitalWrite(IN1,0); digitalWrite(IN2,0); digitalWrite(IN3,1); digitalWrite(IN4,1); break;
+    case 3: digitalWrite(IN1,1); digitalWrite(IN2,0); digitalWrite(IN3,0); digitalWrite(IN4,1); break;
   }
 }
 
 void moverAdelante(int pasos) {
   for (int i = 0; i < pasos; i++) {
-    for (int j = 0; j < 8; j++){
+    for (int j = 0; j < 4; j++){
       stepMotor(j);
       delay(stepDelay);
     }
@@ -33,7 +29,7 @@ void moverAdelante(int pasos) {
 
 void moverAtras(int pasos) {
   for (int i = 0; i < pasos; i++) {
-    for (int j = 8; j > 0; j--){
+    for (int j = 3; j >= 0; j--){
       stepMotor(j);
       delay(stepDelay);
     }
@@ -63,5 +59,11 @@ void loop() {
 
     if (dir == '+') moverAdelante(pasos);
     if (dir == '-') moverAtras(pasos);
+    if (dir == 's') {
+      digitalWrite(IN1,0);
+      digitalWrite(IN2,0);
+      digitalWrite(IN3,0);
+      digitalWrite(IN4,0);
+    }
   }
 }
