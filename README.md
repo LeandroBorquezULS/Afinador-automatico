@@ -46,5 +46,6 @@ El afinador recibe una señal de audio (por ejemplo, de un micrófono), procesa 
 
 ---
 
-**Hecho por [Leandro Borquez-Cristián Contreras-Maximiliano Molina-Jose Barraza-Maximiliano Oyarse-Piero Araya)**  
+**Hecho por [Leandro Borquez-Cristián Contreras-Maximiliano Molina-Jose Barraza-Maximiliano Oyarse-Piero Araya]**
+Bajo el contexto de la aplicación de Series de Fourier, en el marco del ramo Matemáticas IV, impartido por el Doctor Eric Roberto Jeltsch Figueroa en la Universidad de La Serena
 Proyecto enfocado en el acceso universal a herramientas musicales inteligentes.
